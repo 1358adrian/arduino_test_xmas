@@ -18,15 +18,28 @@ volatile bool timerFlag = false; // Timer interrupt flag
 volatile bool doorOpen = false;  // Door state
 volatile bool obstacleDetected = false; // Obstacle warning state
 volatile bool manualMode = false; // Manual control mode
+volatile bool systemLockout = false; // System lockout state
 float distance = 0.0;           // Measured distance
 const float DETECTION_RANGE = 20.0; // Detection threshold in cm
 const int DOOR_OPEN_TIME = 5000; // 5 seconds door open time
+
+// False trigger detection variables
+unsigned int falseTriggerCount = 0;
+const unsigned int MAX_FALSE_TRIGGERS = 3;
+unsigned long lastButtonPressTime = 0;
+const unsigned long RAPID_PRESS_THRESHOLD = 100; // 100ms; adjust if needed
+unsigned long lastDistanceChangeTime = 0;
+float lastStableDistance = 0.0;
+bool lastDistanceState = false; // false = above 20cm, true = below 20cm
+const unsigned long SENSOR_STABILITY_THRESHOLD = 250; // 250ms; adjust if needed
 
 // Display and timing variables
 unsigned long lastDisplayTime = 0;
 const unsigned long DISPLAY_INTERVAL = 1000; // Update display every 1 second
 unsigned long lastDistanceLog = 0;
-const unsigned long DISTANCE_LOG_INTERVAL = 1000; // Log distance every 1 second
+const unsigned long DISTANCE_LOG_INTERVAL = 500; // Log distance every 500ms
+unsigned long lockoutStartTime = 0;
+const unsigned long LOCKOUT_DURATION = 10000; // 10 seconds lockout
 
 // Button debouncing variables
 bool lastButtonState = HIGH;
@@ -40,8 +53,10 @@ portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 // --------- BUZZER CONFIGURATION --------
 const int BUZZER_CHANNEL = 2;
-const int WARNING_FREQ = 440; // 440Hz warning tone
-const int WARNING_FREQ_2 = 550; // 550Hz warning tone
+const int WARNING_FREQ = 440;   // 440Hz 5-second timer lapsed warning tone
+const int WARNING_FREQ_2 = 550; // 550Hz door close attempt warning tone
+const int WARNING_FREQ_3 = 660; // 660Hz false trigger alert
+const int WARNING_FREQ_4 = 880; // 880Hz lockout alert
 
 // --------- FUNCTION PROTOTYPES --------
 float measureDistance();
@@ -50,9 +65,14 @@ void closeDoor();
 void startWarningBuzzer();
 void stopWarningBuzzer();
 void shortBeep();
+void falseTriggerAlert();
+void lockoutAlert();
+void checkFalseTriggers();
 bool readButton();
 void handleButtonPress();
 void exitToAutoMode();
+void enterLockoutMode();
+void exitLockoutMode();
 void displaySystemStatus();
 void logDistanceReading();
 void logEvent(const char* event, const char* details = "");
@@ -81,6 +101,10 @@ void setup() {
   // Initialize door state (closed)
   closeDoor();
   
+  // Initialize distance state
+  lastStableDistance = measureDistance();
+  lastDistanceState = (lastStableDistance <= DETECTION_RANGE);
+  
   // Configure hardware timer for automatic door closing
   doorTimer = timerBegin(0, 80, true); // Timer 0, prescaler 80 (1MHz), count up
   timerAttachInterrupt(doorTimer, &onTimer, true); // Edge triggered
@@ -90,15 +114,37 @@ void setup() {
   Serial.println("\n================================================");
   Serial.println("    ENHANCED SMART DOOR SYSTEM INITIALIZED");
   Serial.println("================================================");
-  logEvent("SYSTEM", "Smart Door System Started");
+  logEvent("SYSTEM", "Smart Door System Started - False Trigger Protection Active");
   displaySystemStatus();
   Serial.println("Waiting for object detection within 20cm...");
   Serial.println("------------------------------------------------");
 }
 
 void loop() {
+  // Check if system is in lockout mode
+  if (systemLockout) {
+    if (millis() - lockoutStartTime >= LOCKOUT_DURATION) {
+      exitLockoutMode();
+    } else {
+      // Continue lockout - blink both LEDs to indicate lockout
+      static unsigned long lastLockoutBlink = 0;
+      static bool lockoutLedState = false;
+      
+      if (millis() - lastLockoutBlink > 500) {
+        lockoutLedState = !lockoutLedState;
+        digitalWrite(GREEN_LED, lockoutLedState);
+        digitalWrite(RED_LED, lockoutLedState);
+        lastLockoutBlink = millis();
+      }
+      return; // Skip all other processing during lockout
+    }
+  }
+  
   // Measure distance continuously
   distance = measureDistance();
+  
+  // Check for false triggers
+  checkFalseTriggers();
   
   // Log distance readings periodically
   logDistanceReading();
@@ -228,6 +274,8 @@ float measureDistance() {
 
 // Function to open the door
 void openDoor() {
+  if (systemLockout) return; // Ignore during lockout
+  
   doorServo.write(180); // Rotate servo to 180 degrees (open)
   digitalWrite(GREEN_LED, HIGH); // Turn on green LED
   digitalWrite(RED_LED, LOW);    // Turn off red LED
@@ -239,6 +287,8 @@ void openDoor() {
 
 // Function to close the door
 void closeDoor() {
+  if (systemLockout) return; // Ignore during lockout
+  
   doorServo.write(0); // Rotate servo to 0 degrees (closed)
   digitalWrite(GREEN_LED, LOW);  // Turn off green LED
   digitalWrite(RED_LED, HIGH);   // Turn on red LED
@@ -269,8 +319,53 @@ void shortBeep() {
   logEvent("ALERT", "Short beep alert (550Hz) - Button denied");
 }
 
+// Function for false trigger alert
+void falseTriggerAlert() {
+  ledcWriteTone(BUZZER_CHANNEL, WARNING_FREQ_3);
+  delay(300); // 300ms beep
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+  Serial.print("⚠️ [WARNING] ");
+  Serial.println("False trigger detected! Count: " + String(falseTriggerCount) + "/" + String(MAX_FALSE_TRIGGERS));
+}
+
+// Function for lockout alert
+void lockoutAlert() {
+  ledcWriteTone(BUZZER_CHANNEL, WARNING_FREQ_4);
+  logError("SYSTEM LOCKOUT ACTIVATED - Ignoring all inputs for 10 seconds");
+}
+
+// Function to check for false triggers
+void checkFalseTriggers() {
+  // Check for rapid button presses
+  if (lastButtonPressTime > 0 && (millis() - lastButtonPressTime) < RAPID_PRESS_THRESHOLD) {
+    falseTriggerCount++;
+    lastButtonPressTime = 0; // Reset to prevent multiple counts for same event
+    falseTriggerAlert();
+  }
+  
+  // Check for inconsistent ultrasonic sensor readings
+  bool currentDistanceState = (distance <= DETECTION_RANGE && distance > 0);
+  
+  if (currentDistanceState != lastDistanceState) {
+    if (lastDistanceChangeTime > 0 && (millis() - lastDistanceChangeTime) < SENSOR_STABILITY_THRESHOLD) {
+      // Rapid state change detected
+      falseTriggerCount++;
+      falseTriggerAlert();
+    }
+    lastDistanceState = currentDistanceState;
+    lastDistanceChangeTime = millis();
+  }
+  
+  // Check if false trigger threshold reached
+  if (falseTriggerCount >= MAX_FALSE_TRIGGERS) {
+    enterLockoutMode();
+  }
+}
+
 // Function to read button with debouncing
 bool readButton() {
+  if (systemLockout) return false; // Ignore buttons during lockout
+  
   bool reading = digitalRead(BUTTON_PIN);
   
   // Check if button state changed (due to noise or pressing)
@@ -286,6 +381,14 @@ bool readButton() {
       // If the button was pressed (LOW because of pull-up)
       if (buttonState == LOW) {
         lastButtonState = reading;
+        
+        // Record button press time for rapid press detection
+        unsigned long currentTime = millis();
+        if (lastButtonPressTime > 0 && (currentTime - lastButtonPressTime) < RAPID_PRESS_THRESHOLD) {
+          // This will be caught in checkFalseTriggers
+        }
+        lastButtonPressTime = currentTime;
+        
         return true;
       }
     }
@@ -351,6 +454,34 @@ void exitToAutoMode() {
   logEvent("TIMER", "Auto mode reactivated - Door will close automatically in 5 seconds");
 }
 
+// Function to enter lockout mode
+void enterLockoutMode() {
+  systemLockout = true;
+  lockoutStartTime = millis();
+  falseTriggerCount = 0; // Reset counter
+  lockoutAlert();
+  
+  // Stop any ongoing operations
+  // Do not use `stopWarningBuzzer();` here to sound a `lockoutAlert();` tone.
+  timerAlarmDisable(doorTimer);
+}
+
+// Function to exit lockout mode
+void exitLockoutMode() {
+  systemLockout = false;
+  stopWarningBuzzer();
+  logEvent("SYSTEM", "Lockout period ended. Resuming normal operation.");
+  
+  // Restore LED states based on door state
+  if (doorOpen) {
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+  } else {
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+  }
+}
+
 // Function to display comprehensive system status
 void displaySystemStatus() {
   Serial.println("\n=== SYSTEM STATUS ===");
@@ -360,6 +491,12 @@ void displaySystemStatus() {
   Serial.println(doorOpen ? "OPEN" : "CLOSED");
   Serial.print("Obstacle: ");
   Serial.println(obstacleDetected ? "DETECTED" : "CLEAR");
+  Serial.print("Lockout: ");
+  Serial.println(systemLockout ? "ACTIVE" : "INACTIVE");
+  Serial.print("False Triggers: ");
+  Serial.print(falseTriggerCount);
+  Serial.print("/");
+  Serial.println(MAX_FALSE_TRIGGERS);
   Serial.print("Distance: ");
   Serial.print(distance);
   Serial.println(" cm");
@@ -368,6 +505,11 @@ void displaySystemStatus() {
   Serial.println(" cm");
   Serial.print("Timer: ");
   Serial.println(timerAlarmEnabled(doorTimer) ? "ACTIVE" : "INACTIVE");
+  if (systemLockout) {
+    Serial.print("Lockout Time Remaining: ");
+    Serial.print((LOCKOUT_DURATION - (millis() - lockoutStartTime)) / 1000);
+    Serial.println(" seconds");
+  }
   Serial.println("===================");
 }
 
