@@ -26,18 +26,23 @@ const int DOOR_OPEN_TIME = 5000; // 5 seconds door open time
 // False trigger detection variables
 unsigned int falseTriggerCount = 0;
 const unsigned int MAX_FALSE_TRIGGERS = 3;
-unsigned long lastButtonPressTime = 0;
-const unsigned long RAPID_PRESS_THRESHOLD = 100; // 100ms; adjust if needed
+
+// Rapid button press detection - FIXED
+unsigned long lastButtonReleaseTime = 0;
+const unsigned long RAPID_PRESS_THRESHOLD = 500; // Time between release and next press
+bool buttonPressed = false;
+
+// Sensor stability detection
 unsigned long lastDistanceChangeTime = 0;
 float lastStableDistance = 0.0;
 bool lastDistanceState = false; // false = above 20cm, true = below 20cm
-const unsigned long SENSOR_STABILITY_THRESHOLD = 250; // 250ms; adjust if needed
+const unsigned long SENSOR_STABILITY_THRESHOLD = 200; // 200ms
 
 // Display and timing variables
 unsigned long lastDisplayTime = 0;
 const unsigned long DISPLAY_INTERVAL = 1000; // Update display every 1 second
 unsigned long lastDistanceLog = 0;
-const unsigned long DISTANCE_LOG_INTERVAL = 500; // Log distance every 500ms
+const unsigned long DISTANCE_LOG_INTERVAL = 1000; // Log distance every 1 second
 unsigned long lockoutStartTime = 0;
 const unsigned long LOCKOUT_DURATION = 10000; // 10 seconds lockout
 
@@ -336,13 +341,6 @@ void lockoutAlert() {
 
 // Function to check for false triggers
 void checkFalseTriggers() {
-  // Check for rapid button presses
-  if (lastButtonPressTime > 0 && (millis() - lastButtonPressTime) < RAPID_PRESS_THRESHOLD) {
-    falseTriggerCount++;
-    lastButtonPressTime = 0; // Reset to prevent multiple counts for same event
-    falseTriggerAlert();
-  }
-  
   // Check for inconsistent ultrasonic sensor readings
   bool currentDistanceState = (distance <= DETECTION_RANGE && distance > 0);
   
@@ -350,6 +348,7 @@ void checkFalseTriggers() {
     if (lastDistanceChangeTime > 0 && (millis() - lastDistanceChangeTime) < SENSOR_STABILITY_THRESHOLD) {
       // Rapid state change detected
       falseTriggerCount++;
+      logWarning("Sensor instability detected - Rapid state change");
       falseTriggerAlert();
     }
     lastDistanceState = currentDistanceState;
@@ -362,7 +361,7 @@ void checkFalseTriggers() {
   }
 }
 
-// Function to read button with debouncing
+// Function to read button with debouncing and rapid press detection - FIXED
 bool readButton() {
   if (systemLockout) return false; // Ignore buttons during lockout
   
@@ -378,18 +377,23 @@ bool readButton() {
     if (reading != buttonState) {
       buttonState = reading;
       
-      // If the button was pressed (LOW because of pull-up)
       if (buttonState == LOW) {
+        // Button pressed (falling edge)
         lastButtonState = reading;
+        buttonPressed = true;
         
-        // Record button press time for rapid press detection
-        unsigned long currentTime = millis();
-        if (lastButtonPressTime > 0 && (currentTime - lastButtonPressTime) < RAPID_PRESS_THRESHOLD) {
-          // This will be caught in checkFalseTriggers
+        // Check for rapid press: time between release and next press < 100ms
+        if (lastButtonReleaseTime > 0 && (millis() - lastButtonReleaseTime) < RAPID_PRESS_THRESHOLD) {
+          falseTriggerCount++;
+          logWarning("Rapid button press detected");
+          falseTriggerAlert();
         }
-        lastButtonPressTime = currentTime;
         
         return true;
+      } else {
+        // Button released (rising edge)
+        lastButtonReleaseTime = millis();
+        buttonPressed = false;
       }
     }
   }
@@ -462,7 +466,6 @@ void enterLockoutMode() {
   lockoutAlert();
   
   // Stop any ongoing operations
-  // Do not use `stopWarningBuzzer();` here to sound a `lockoutAlert();` tone.
   timerAlarmDisable(doorTimer);
 }
 
@@ -470,6 +473,12 @@ void enterLockoutMode() {
 void exitLockoutMode() {
   systemLockout = false;
   stopWarningBuzzer();
+  
+  // Reset all false trigger detection variables
+  falseTriggerCount = 0;
+  lastButtonReleaseTime = 0;
+  lastDistanceChangeTime = 0;
+  
   logEvent("SYSTEM", "Lockout period ended. Resuming normal operation.");
   
   // Restore LED states based on door state
