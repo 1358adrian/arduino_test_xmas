@@ -22,6 +22,12 @@ float distance = 0.0;           // Measured distance
 const float DETECTION_RANGE = 20.0; // Detection threshold in cm
 const int DOOR_OPEN_TIME = 5000; // 5 seconds door open time
 
+// Display and timing variables
+unsigned long lastDisplayTime = 0;
+const unsigned long DISPLAY_INTERVAL = 1000; // Update display every 1 second
+unsigned long lastDistanceLog = 0;
+const unsigned long DISTANCE_LOG_INTERVAL = 1000; // Log distance every 1 second
+
 // Button debouncing variables
 bool lastButtonState = HIGH;
 bool buttonState = HIGH;
@@ -47,6 +53,11 @@ void shortBeep();
 bool readButton();
 void handleButtonPress();
 void exitToAutoMode();
+void displaySystemStatus();
+void logDistanceReading();
+void logEvent(const char* event, const char* details = "");
+void logWarning(const char* warning);
+void logError(const char* error);
 void IRAM_ATTR onTimer();
 
 void setup() {
@@ -76,14 +87,27 @@ void setup() {
   timerAlarmWrite(doorTimer, DOOR_OPEN_TIME * 1000, false); // 5 seconds in microseconds
   timerAlarmEnable(doorTimer); // Start timer (but it won't trigger until armed)
   
-  Serial.println("Enhanced Smart Door System with Smart Mode Switching");
-  Serial.println("Modes: Auto (object <20cm) | Manual (object >20cm + button)");
+  Serial.println("\n================================================");
+  Serial.println("    ENHANCED SMART DOOR SYSTEM INITIALIZED");
+  Serial.println("================================================");
+  logEvent("SYSTEM", "Smart Door System Started");
+  displaySystemStatus();
   Serial.println("Waiting for object detection within 20cm...");
+  Serial.println("------------------------------------------------");
 }
 
 void loop() {
   // Measure distance continuously
   distance = measureDistance();
+  
+  // Log distance readings periodically
+  logDistanceReading();
+  
+  // Display system status periodically
+  if (millis() - lastDisplayTime >= DISPLAY_INTERVAL) {
+    displaySystemStatus();
+    lastDisplayTime = millis();
+  }
   
   // Read and handle button press
   if (readButton()) {
@@ -92,14 +116,14 @@ void loop() {
   
   // Check if object detected in manual mode - exit to auto mode
   if (manualMode && distance <= DETECTION_RANGE && distance > 0) {
-    Serial.println("Object detected in manual mode - Switching to auto mode");
+    logEvent("MODE SWITCH", "Object detected in manual mode - Switching to auto mode");
     exitToAutoMode();
   }
   
   // Automatic mode: Check for object detection to open door
   if (!manualMode && distance <= DETECTION_RANGE && distance > 0) {
     if (!doorOpen && !obstacleDetected) {
-      Serial.println("Object detected! Opening door...");
+      logEvent("AUTO TRIGGER", "Object detected! Opening door...");
       openDoor();
       
       // Arm the timer for automatic closing
@@ -123,7 +147,7 @@ void loop() {
     if (currentDistance <= DETECTION_RANGE && currentDistance > 0) {
       // Obstacle still detected - keep door open and sound warning
       obstacleDetected = true;
-      Serial.println("OBSTACLE DETECTED! Cannot close door - Warning buzzer activated");
+      logWarning("OBSTACLE DETECTED! Cannot close door - Warning buzzer activated");
       startWarningBuzzer();
       
       // Reset timer to check again in 2 seconds
@@ -131,7 +155,7 @@ void loop() {
       timerAlarmEnable(doorTimer);
     } else {
       // No obstacle - safe to close door
-      Serial.println("Timer expired! Closing door...");
+      logEvent("TIMER", "Timer expired! Closing door...");
       closeDoor();
       obstacleDetected = false;
       timerAlarmDisable(doorTimer); // Disable timer until next opening
@@ -147,7 +171,7 @@ void loop() {
     
     if (currentDistance > DETECTION_RANGE || currentDistance <= 0) {
       // Obstacle cleared - stop warning and close door
-      Serial.println("Obstacle cleared! Closing door...");
+      logEvent("SAFETY", "Obstacle cleared! Closing door...");
       stopWarningBuzzer();
       closeDoor();
       obstacleDetected = false;
@@ -210,7 +234,7 @@ void openDoor() {
   doorOpen = true;
   obstacleDetected = false;
   
-  Serial.println("Door opened - Green LED ON");
+  logEvent("DOOR", "Door opened - Green LED ON");
 }
 
 // Function to close the door
@@ -222,19 +246,19 @@ void closeDoor() {
   obstacleDetected = false;
   stopWarningBuzzer();
   
-  Serial.println("Door closed - Red LED ON");
+  logEvent("DOOR", "Door closed - Red LED ON");
 }
 
 // Function to start warning buzzer
 void startWarningBuzzer() {
   ledcWriteTone(BUZZER_CHANNEL, WARNING_FREQ);
-  Serial.println("Warning buzzer activated (440Hz)");
+  logEvent("BUZZER", "Warning buzzer activated (440Hz)");
 }
 
 // Function to stop warning buzzer
 void stopWarningBuzzer() {
   ledcWriteTone(BUZZER_CHANNEL, 0);
-  Serial.println("Warning buzzer deactivated");
+  logEvent("BUZZER", "Warning buzzer deactivated");
 }
 
 // Function for short beep alert
@@ -242,7 +266,7 @@ void shortBeep() {
   ledcWriteTone(BUZZER_CHANNEL, WARNING_FREQ_2);
   delay(200); // 200ms beep
   ledcWriteTone(BUZZER_CHANNEL, 0);
-  Serial.println("Short beep alert (550Hz)");
+  logEvent("ALERT", "Short beep alert (550Hz) - Button denied");
 }
 
 // Function to read button with debouncing
@@ -275,7 +299,7 @@ bool readButton() {
 void handleButtonPress() {
   // If in AUTO mode and object is detected nearby (<20cm), deny manual operation
   if (!manualMode && distance <= DETECTION_RANGE && distance > 0) {
-    Serial.println("Button denied: Auto mode active with object nearby");
+    logWarning("Button denied: Auto mode active with object nearby");
     shortBeep();
     return;
   }
@@ -284,33 +308,32 @@ void handleButtonPress() {
   if (distance > DETECTION_RANGE || manualMode) {
     if (!doorOpen) {
       // Closed state: Open door and enter manual mode
-      Serial.println("Button pressed: Opening door manually");
+      logEvent("BUTTON", "Opening door manually");
       openDoor();
       manualMode = true;
       timerAlarmDisable(doorTimer); // Disable auto-close timer in manual mode
     } else {
       // Opened state: Close door and toggle manual mode
-      Serial.println("Button pressed: Closing door manually");
+      logEvent("BUTTON", "Closing door manually");
       closeDoor();
       manualMode = true; // Stay in manual mode for next toggle
     }
   } else if (doorOpen && distance <= DETECTION_RANGE) {
     // Object was detected and door opened automatically, but object removed before timer
     // Button press closes door immediately
-    Serial.println("Button pressed: Closing door immediately (object cleared)");
+    logEvent("BUTTON", "Closing door immediately (object cleared)");
     closeDoor();
     manualMode = true; // Enter manual mode after button intervention
     timerAlarmDisable(doorTimer); // Disable the running timer
   }
   
-  Serial.print("Manual mode: ");
-  Serial.println(manualMode ? "ON" : "OFF");
+  logEvent("MODE", manualMode ? "Manual mode ON" : "Auto mode ON");
 }
 
 // Function to exit manual mode and return to auto mode
 void exitToAutoMode() {
   manualMode = false;
-  Serial.println("Exiting manual mode - Returning to auto mode");
+  logEvent("MODE SWITCH", "Exiting manual mode - Returning to auto mode");
   
   // Ensure door is open when object is detected
   if (!doorOpen) {
@@ -325,5 +348,62 @@ void exitToAutoMode() {
   timerWrite(doorTimer, 0); // Reset timer counter
   timerAlarmEnable(doorTimer); // Enable timer interrupt
   
-  Serial.println("Auto mode reactivated - Door will close automatically in 5 seconds");
+  logEvent("TIMER", "Auto mode reactivated - Door will close automatically in 5 seconds");
+}
+
+// Function to display comprehensive system status
+void displaySystemStatus() {
+  Serial.println("\n=== SYSTEM STATUS ===");
+  Serial.print("Mode: ");
+  Serial.println(manualMode ? "MANUAL" : "AUTO");
+  Serial.print("Door: ");
+  Serial.println(doorOpen ? "OPEN" : "CLOSED");
+  Serial.print("Obstacle: ");
+  Serial.println(obstacleDetected ? "DETECTED" : "CLEAR");
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.println(" cm");
+  Serial.print("Detection Range: ");
+  Serial.print(DETECTION_RANGE);
+  Serial.println(" cm");
+  Serial.print("Timer: ");
+  Serial.println(timerAlarmEnabled(doorTimer) ? "ACTIVE" : "INACTIVE");
+  Serial.println("===================");
+}
+
+// Function to log distance readings
+void logDistanceReading() {
+  if (millis() - lastDistanceLog >= DISTANCE_LOG_INTERVAL) {
+    Serial.print("[SENSOR] Distance: ");
+    Serial.print(distance);
+    Serial.print(" cm - ");
+    if (distance <= DETECTION_RANGE && distance > 0) {
+      Serial.println("OBJECT DETECTED");
+    } else if (distance > DETECTION_RANGE) {
+      Serial.println("CLEAR");
+    } else {
+      Serial.println("INVALID READING");
+    }
+    lastDistanceLog = millis();
+  }
+}
+
+// Function to log general events
+void logEvent(const char* event, const char* details) {
+  Serial.print("[");
+  Serial.print(event);
+  Serial.print("] ");
+  Serial.println(details);
+}
+
+// Function to log warnings
+void logWarning(const char* warning) {
+  Serial.print("⚠️ [WARNING] ");
+  Serial.println(warning);
+}
+
+// Function to log errors
+void logError(const char* error) {
+  Serial.print("🚨 [ERROR] ");
+  Serial.println(error);
 }
