@@ -1,0 +1,141 @@
+Esp32 code to:
+Rotate servo to 180deg if the distance between the ultrasonic sensor and any object is 20 cm.
+Otherwise, Rotate servo to 0deg.
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+
+// --------- PIN CONFIGURATION ----------
+const int TRIG_PIN     = 14; // HC-SR04 trigger
+const int ECHO_PIN     = 27; // HC-SR04 echo
+const int SERVO_PIN    = 26; // Servo PWM pin
+
+---
+Now beep the piezo buzzer every servo rotation in 440Hz using LEDC function.
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+
+// --------- PIN CONFIGURATION ----------
+const int TRIG_PIN     = 14; // HC-SR04 trigger
+const int ECHO_PIN     = 27; // HC-SR04 echo
+const int SERVO_PIN    = 26; // Servo PWM pin
+const int BUZZER_PIN   = 25; // Piezo buzzer
+
+---
+Provide an ESP32 code to design and implement an enhanced smart door system using an ESP32 that integrates timers, interrupts, and a proximity sensor to simulate an intelligent door that can respond automatically.
+
+Inputs:
+Ultrasonic Sensor (HC-SR04):
+Detects proximity to trigger automatic door opening.
+Timer (Hardware Timer):
+Automatically closes the door after a preset delay.
+
+Outputs:
+Servo Motor: Simulates the door lock or opening mechanism. (use esp32servo library) Rotate servo in 180 degrees to open the door. Rotate servo in 0 degrees to close the door.
+Green LED: Door open indicator.
+Red LED: Door closed indicator.
+ 
+Programming Tasks:
+Initialize I/O Devices
+Configure the ultrasonic sensor pins (TRIG, ECHO), servo, and LEDs.
+Set up a hardware timer to handle automatic door closure after 5 seconds.
+Continuously measure distance using the ultrasonic sensor.
+If an object or person is detected within 20 cm, open the door automatically.
+Keep it open for 5 seconds, then close it using the timer interrupt.
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+
+// --------- PIN CONFIGURATION ----------
+const int TRIG_PIN     = 14; // HC-SR04 trigger
+const int ECHO_PIN     = 27; // HC-SR04 echo
+const int SERVO_PIN    = 26; // Servo PWM pin
+const int GREEN_LED    = 12; // Door open indicator
+const int RED_LED      = 2;  // Door closed indicator
+
+---
+If the ultrasonic sensor still detects an object when attempting to close after 5 seconds, keep the door open and issue a piezo buzzer warning (sound it in 440Hz) until the obstacle clears.
+const int BUZZER_PIN   = 25;
+
+---
+Now add Push Button functionality to enter in manual mode:
+If the object from the ultrasonic sensor is detected greater than 20cm:
+- During closed state:
+  - Toggle between opening and closing the door. (Press and release the button, the door will open. Press and release the button again, the door will close.)
+- During opened state after an object is detected less than 20cm, and removed it afterwards before the door open time has been lapsed (5 secs):
+  - Press the button to close immediately and enter into closed state. Then toggle between opening and closing the door.
+
+Use: `const int BUTTON_PIN   = 13; // Push button (use internal pull-up)`
+
+---
+If the mode is auto when the object from the ultrasonic sensor is detected near in less than 20cm:
+- Do not enter to manual mode when the button is pressed, as if attempting to close the door. Alert it through short beep (550Hz) and serial monitor.
+If the mode is manual when the object from the ultrasonic sensor is getting near, and detected in less than 20cm, whether the door is manually opened or closed:
+- Exit manual mode, open the door immediately (if closed, or keep it open) in auto mode.
+
+---
+Display events in the Serial Monitor:
+Mode (auto/manual)
+Door status (open/closed)
+Sensor distance readings
+Warnings and errors
+
+---
+If false triggers occured by the following conditions:
+- Rapid button press (less than 100ms)
+- Inconsistent ultrasonic sensor input (reading in less than 20cm switches abruptly and shortly to a reading more than 20cm in less than 100ms, then back to a reading in less than 20cm, or reading in more than 20cm switches abruptly and shortly to a reading less than 20cm in less than 100ms, then back to a reading in more than 20cm)
+
+Then alert it through short beep (660Hz, WARNING_FREQ_3) and serial monitor. False triggers must be occured thrice.
+If false triggers occured thrice, alert it through continuous beep (880Hz, WARNING_FREQ_4) and serial monitor, telling the user that the system ignores all inputs for 10 seconds, simulating lockout before it goes back to normal operation.
+
+---
+There's an issue for handling false triggers for Rapid button press (less than 100ms):
+- The time difference between the first button press, and the second button press after the button is released from the first press, must be less than 100ms to consider as a false trigger.
+
+---
+===
+Provide an ESP32 code to design and implement an enhanced smart door system using an ESP32 that integrates timers, interrupts, and a proximity sensor to simulate an intelligent door that can respond automatically or manually through button control.
+ 
+Instructions
+Inputs:
+Push Button (Manual Control):
+Used to manually open or close the door (with interrupt).
+Ultrasonic Sensor (HC-SR04):
+Detects proximity to trigger automatic door opening.
+Timer (Hardware Timer):
+Automatically closes the door after a preset delay.
+
+Outputs:
+Servo Motor: Simulates the door lock or opening mechanism.
+Green LED: Door open indicator.
+Red LED: Door closed indicator.
+Buzzer: Signals door operation and alerts during lockout.
+ 
+Programming Tasks:
+Initialize I/O Devices
+Configure the ultrasonic sensor pins (TRIG, ECHO), servo, LEDs, buzzer, and button with internal pull-up.
+Set up a hardware timer to handle automatic door closure after 5 seconds.
+Manual Mode (Interrupt-Driven):
+Use an external interrupt for the push button.
+On press, toggle between opening and closing the door.
+Automatic Mode (Sensor-Driven):
+Continuously measure distance using the ultrasonic sensor.
+If an object or person is detected within 20 cm, open the door automatically.
+Keep it open for 5 seconds, then close it using the timer interrupt.
+
+Error and Lockout Handling:
+If three false triggers (e.g., button pressed rapidly or inconsistent sensor input) occur, the system should:
+Activate the buzzer continuously.
+Ignore all inputs for 10 seconds (simulate lockout).
+Use timer-based delay or millis() for lockout instead of blocking delay().
+
+System Feedback:
+Display events in the Serial Monitor:
+Door opened (auto/manual)
+Door closed
+Lockout activated / cleared
+Sensor distance readings
+
+Bonus Challenge:
+Add a door obstruction detector: If the ultrasonic sensor still detects an obstacle when attempting to close, keep the door open and issue a buzzer warning until the obstacle clears.
