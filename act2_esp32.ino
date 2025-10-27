@@ -29,7 +29,7 @@ const unsigned int MAX_FALSE_TRIGGERS = 3;
 
 // Rapid button press detection - FIXED
 unsigned long lastButtonReleaseTime = 0;
-const unsigned long RAPID_PRESS_THRESHOLD = 500; // Time between release and next press
+const unsigned long RAPID_PRESS_THRESHOLD = 800; // Time between release and next press
 bool buttonPressed = false;
 
 // Sensor stability detection
@@ -58,10 +58,10 @@ portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 // --------- BUZZER CONFIGURATION --------
 const int BUZZER_CHANNEL = 2;
-const int WARNING_FREQ = 440;   // 440Hz 5-second timer lapsed warning tone
-const int WARNING_FREQ_2 = 550; // 550Hz door close attempt warning tone
-const int WARNING_FREQ_3 = 660; // 660Hz false trigger alert
-const int WARNING_FREQ_4 = 880; // 880Hz lockout alert
+const int WARNING_FREQ = 880;   // 440Hz 5-second timer lapsed warning tone
+const int WARNING_FREQ_2 = 1100; // 550Hz door close attempt warning tone
+const int WARNING_FREQ_3 = 1320; // 660Hz false trigger alert
+const int WARNING_FREQ_4 = 1760; // 880Hz lockout alert
 
 // --------- FUNCTION PROTOTYPES --------
 float measureDistance();
@@ -489,6 +489,8 @@ void exitLockoutMode() {
     digitalWrite(GREEN_LED, LOW);
     digitalWrite(RED_LED, HIGH);
   }
+
+  if (!manualMode) timerAlarmEnable(doorTimer);
 }
 
 // Function to display comprehensive system status
